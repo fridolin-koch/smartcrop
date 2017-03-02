@@ -69,8 +69,6 @@ const (
 	edgeWeight        = -20.0
 	outsideImportance = -0.5
 	ruleOfThirds      = true
-	prescale          = true
-	prescaleMin       = 400.00
 )
 
 // Score contains values that classify matches
@@ -97,6 +95,8 @@ type CropSettings struct {
 	FaceDetectionHaarCascadeFilepath string
 	InterpolationType                resize.InterpolationFunction
 	DebugMode                        bool
+	Prescale                         bool
+	PrescaleValue                    float64
 }
 
 //Analyzer interface analyzes its struct
@@ -109,25 +109,29 @@ type Analyzer interface {
 
 type openCVAnalyzer struct {
 	cropSettings CropSettings
+	log          Logger
 }
 
 //NewAnalyzer returns a new analyzer with default settings
 func NewAnalyzer() Analyzer {
 	faceDetectionHaarCascade := "/usr/share/opencv/haarcascades/haarcascade_frontalface_alt.xml"
+	// faceDetectionHaarCascade := "/usr/local/Cellar/opencv/2.4.13.2/share/OpenCV/haarcascades/haarcascade_frontalface_alt.xml"
 
 	cropSettings := CropSettings{
 		FaceDetection:                    true,
 		FaceDetectionHaarCascadeFilepath: faceDetectionHaarCascade,
 		InterpolationType:                resize.Bicubic,
 		DebugMode:                        false,
+		Prescale:                         true,
+		PrescaleValue:                    400,
 	}
 
-	return &openCVAnalyzer{cropSettings: cropSettings}
+	return &openCVAnalyzer{cropSettings: cropSettings, log: &defaultLogger{false}}
 }
 
 //NewAnalyzerWithCropSettings returns a new analyzer with the given settings
 func NewAnalyzerWithCropSettings(cropSettings CropSettings) Analyzer {
-	return &openCVAnalyzer{cropSettings: cropSettings}
+	return &openCVAnalyzer{cropSettings: cropSettings, log: &defaultLogger{Debug: cropSettings.DebugMode}}
 }
 
 func (o openCVAnalyzer) FindBestCrop(img image.Image, width, height int) (Crop, error) {
@@ -140,13 +144,15 @@ func (o openCVAnalyzer) FindBestCrop(img image.Image, width, height int) (Crop, 
 	// resize image for faster processing
 	var lowimg image.Image
 	var prescalefactor = 1.0
+	cropWidth := float64(width)
+	cropHeight := float64(height)
 
-	if prescale {
+	if o.cropSettings.Prescale {
 
 		//if f := 1.0 / scale / minScale; f < 1.0 {
 		//	prescalefactor = f
 		//}
-		if f := prescaleMin / math.Min(float64(img.Bounds().Size().X), float64(img.Bounds().Size().Y)); f < 1.0 {
+		if f := o.cropSettings.PrescaleValue / math.Min(float64(img.Bounds().Size().X), float64(img.Bounds().Size().Y)); f < 1.0 {
 			prescalefactor = f
 		}
 		log.Println(prescalefactor)
@@ -156,26 +162,27 @@ func (o openCVAnalyzer) FindBestCrop(img image.Image, width, height int) (Crop, 
 			0,
 			img,
 			o.cropSettings.InterpolationType)
+
+		cropWidth, cropHeight = chop(float64(width)*scale*prescalefactor), chop(float64(height)*scale*prescalefactor)
+
 	} else {
 		lowimg = img
 	}
 
-	if o.cropSettings.DebugMode {
-		writeImageToPng(&lowimg, "./smartcrop_prescale.png")
-	}
-
-	cropWidth, cropHeight := chop(float64(width)*scale*prescalefactor), chop(float64(height)*scale*prescalefactor)
 	realMinScale := math.Min(maxScale, math.Max(1.0/scale, minScale))
 
-	log.Printf("original resolution: %dx%d\n", img.Bounds().Size().X, img.Bounds().Size().Y)
-	log.Printf("scale: %f, cropw: %f, croph: %f, minscale: %f\n", scale, cropWidth, cropHeight, realMinScale)
+	if o.cropSettings.DebugMode {
+		writeImageToPng(&lowimg, "./smartcrop_prescale.png")
+		o.log.Debugf("original resolution: %dx%d\n", img.Bounds().Size().X, img.Bounds().Size().Y)
+		o.log.Debugf("scale: %f, cropw: %f, croph: %f, minscale: %f\n", scale, cropWidth, cropHeight, realMinScale)
+	}
 
-	topCrop, err := analyse(o.cropSettings, lowimg, cropWidth, cropHeight, realMinScale)
+	topCrop, err := o.analyse(o.cropSettings, lowimg, cropWidth, cropHeight, realMinScale)
 	if err != nil {
 		return topCrop, err
 	}
 
-	if prescale == true {
+	if o.cropSettings.Prescale {
 		topCrop.X = int(chop(float64(topCrop.X) / prescalefactor))
 		topCrop.Y = int(chop(float64(topCrop.Y) / prescalefactor))
 		topCrop.Width = int(chop(float64(topCrop.Width) / prescalefactor))
@@ -288,56 +295,56 @@ func drawDebugCrop(topCrop *Crop, o *image.Image) {
 	}
 }
 
-func analyse(settings CropSettings, img image.Image, cropWidth, cropHeight, realMinScale float64) (Crop, error) {
-	o := image.Image(image.NewRGBA(img.Bounds()))
+func (o openCVAnalyzer) analyse(settings CropSettings, img image.Image, cropWidth, cropHeight, realMinScale float64) (Crop, error) {
+	oimg := image.Image(image.NewRGBA(img.Bounds()))
 
 	now := time.Now()
-	edgeDetect(img, o)
-	log.Println("Time elapsed edge:", time.Since(now))
-	debugOutput(settings.DebugMode, &o, "edge")
+	edgeDetect(img, oimg)
+	o.log.Debugf("Time elapsed edge:", time.Since(now))
+	debugOutput(settings.DebugMode, &oimg, "edge")
 
 	now = time.Now()
 	if settings.FaceDetection {
-		err := faceDetect(settings, img, o)
+		err := o.faceDetect(settings, img, oimg)
 
 		if err != nil {
 			return Crop{}, err
 		}
 
-		log.Println("Time elapsed face:", time.Since(now))
-		debugOutput(settings.DebugMode, &o, "face")
+		o.log.Debugf("Time elapsed face:", time.Since(now))
+		debugOutput(settings.DebugMode, &oimg, "face")
 	} else {
-		skinDetect(img, o)
-		log.Println("Time elapsed skin:", time.Since(now))
-		debugOutput(settings.DebugMode, &o, "skin")
+		skinDetect(img, oimg)
+		o.log.Debugf("Time elapsed skin:", time.Since(now))
+		debugOutput(settings.DebugMode, &oimg, "skin")
 	}
 
 	now = time.Now()
-	saturationDetect(img, o)
-	log.Println("Time elapsed sat:", time.Since(now))
-	debugOutput(settings.DebugMode, &o, "saturation")
+	saturationDetect(img, oimg)
+	o.log.Debugf("Time elapsed sat:", time.Since(now))
+	debugOutput(settings.DebugMode, &oimg, "saturation")
 
 	now = time.Now()
 	var topCrop Crop
 	topScore := -1.0
-	cs := crops(o, cropWidth, cropHeight, realMinScale)
-	log.Println("Time elapsed crops:", time.Since(now), len(cs))
+	cs := crops(oimg, cropWidth, cropHeight, realMinScale)
+	o.log.Debugf("Time elapsed crops:", time.Since(now), len(cs))
 
 	now = time.Now()
 	for _, crop := range cs {
 		nowIn := time.Now()
-		crop.Score = score(&o, &crop)
-		log.Println("Time elapsed single-score:", time.Since(nowIn))
+		crop.Score = score(&oimg, &crop)
+		o.log.Debugf("Time elapsed single-score:", time.Since(nowIn))
 		if crop.Score.Total > topScore {
 			topCrop = crop
 			topScore = crop.Score.Total
 		}
 	}
-	log.Println("Time elapsed score:", time.Since(now))
+	o.log.Debugf("Time elapsed score:", time.Since(now))
 
 	if settings.DebugMode {
-		drawDebugCrop(&topCrop, &o)
-		debugOutput(true, &o, "final")
+		drawDebugCrop(&topCrop, &oimg)
+		debugOutput(true, &oimg, "final")
 	}
 
 	return topCrop, nil
@@ -431,26 +438,24 @@ func edgeDetect(i image.Image, o image.Image) {
 	}
 }
 
-func faceDetect(settings CropSettings, i image.Image, o image.Image) error {
+func (o openCVAnalyzer) faceDetect(settings CropSettings, i image.Image, oimg image.Image) error {
 
 	cvImage := opencv.FromImage(i)
+	defer cvImage.Release()
 	_, err := os.Stat(settings.FaceDetectionHaarCascadeFilepath)
 	if err != nil {
 		return err
 	}
 	cascade := opencv.LoadHaarClassifierCascade(settings.FaceDetectionHaarCascadeFilepath)
+	defer cascade.Release()
 	faces := cascade.DetectObjects(cvImage)
 
-	gc := draw2dimg.NewGraphicContext((o).(*image.RGBA))
+	gc := draw2dimg.NewGraphicContext((oimg).(*image.RGBA))
 
-	if settings.DebugMode == true {
-		log.Println("Faces detected:", len(faces))
-	}
+	o.log.Debugf("Faces detected:", len(faces))
 
 	for _, face := range faces {
-		if settings.DebugMode == true {
-			log.Printf("Face: x: %d y: %d w: %d h: %d\n", face.X(), face.Y(), face.Width(), face.Height())
-		}
+		o.log.Debugf("Face: x: %d y: %d w: %d h: %d\n", face.X(), face.Y(), face.Width(), face.Height())
 		draw2dkit.Ellipse(
 			gc,
 			float64(face.X()+(face.Width()/2)),
