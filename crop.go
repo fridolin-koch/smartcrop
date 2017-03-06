@@ -130,8 +130,11 @@ func NewAnalyzer() Analyzer {
 }
 
 //NewAnalyzerWithCropSettings returns a new analyzer with the given settings
-func NewAnalyzerWithCropSettings(cropSettings CropSettings) Analyzer {
-	return &openCVAnalyzer{cropSettings: cropSettings, log: &defaultLogger{Debug: cropSettings.DebugMode}}
+func NewAnalyzerWithCropSettings(cropSettings CropSettings, log Logger) Analyzer {
+	if log == nil {
+		log = &defaultLogger{Debug: cropSettings.DebugMode}
+	}
+	return &openCVAnalyzer{cropSettings: cropSettings, log: log}
 }
 
 func (o openCVAnalyzer) FindBestCrop(img image.Image, width, height int) (Crop, error) {
@@ -300,7 +303,7 @@ func (o openCVAnalyzer) analyse(settings CropSettings, img image.Image, cropWidt
 
 	now := time.Now()
 	edgeDetect(img, oimg)
-	o.log.Debugf("Time elapsed edge:", time.Since(now))
+	o.log.Debugf("Time elapsed edge: %v", time.Since(now))
 	debugOutput(settings.DebugMode, &oimg, "edge")
 
 	now = time.Now()
@@ -311,36 +314,36 @@ func (o openCVAnalyzer) analyse(settings CropSettings, img image.Image, cropWidt
 			return Crop{}, err
 		}
 
-		o.log.Debugf("Time elapsed face:", time.Since(now))
+		o.log.Debugf("Time elapsed face: %v", time.Since(now))
 		debugOutput(settings.DebugMode, &oimg, "face")
 	} else {
 		skinDetect(img, oimg)
-		o.log.Debugf("Time elapsed skin:", time.Since(now))
+		o.log.Debugf("Time elapsed skin: %v", time.Since(now))
 		debugOutput(settings.DebugMode, &oimg, "skin")
 	}
 
 	now = time.Now()
 	saturationDetect(img, oimg)
-	o.log.Debugf("Time elapsed sat:", time.Since(now))
+	o.log.Debugf("Time elapsed sat: %v", time.Since(now))
 	debugOutput(settings.DebugMode, &oimg, "saturation")
 
 	now = time.Now()
 	var topCrop Crop
 	topScore := -1.0
 	cs := crops(oimg, cropWidth, cropHeight, realMinScale)
-	o.log.Debugf("Time elapsed crops:", time.Since(now), len(cs))
+	o.log.Debugf("Time elapsed crops: %v %d", time.Since(now), len(cs))
 
 	now = time.Now()
 	for _, crop := range cs {
 		nowIn := time.Now()
 		crop.Score = score(&oimg, &crop)
-		o.log.Debugf("Time elapsed single-score:", time.Since(nowIn))
+		o.log.Debugf("Time elapsed single-score: %v", time.Since(nowIn))
 		if crop.Score.Total > topScore {
 			topCrop = crop
 			topScore = crop.Score.Total
 		}
 	}
-	o.log.Debugf("Time elapsed score:", time.Since(now))
+	o.log.Debugf("Time elapsed score: %v", time.Since(now))
 
 	if settings.DebugMode {
 		drawDebugCrop(&topCrop, &oimg)
@@ -452,10 +455,10 @@ func (o openCVAnalyzer) faceDetect(settings CropSettings, i image.Image, oimg im
 
 	gc := draw2dimg.NewGraphicContext((oimg).(*image.RGBA))
 
-	o.log.Debugf("Faces detected:", len(faces))
+	o.log.Debugf("Faces detected: %d", len(faces))
 
 	for _, face := range faces {
-		o.log.Debugf("Face: x: %d y: %d w: %d h: %d\n", face.X(), face.Y(), face.Width(), face.Height())
+		o.log.Debugf("Face: x: %d y: %d w: %d h: %d", face.X(), face.Y(), face.Width(), face.Height())
 		draw2dkit.Ellipse(
 			gc,
 			float64(face.X()+(face.Width()/2)),
